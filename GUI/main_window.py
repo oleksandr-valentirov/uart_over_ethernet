@@ -9,9 +9,9 @@ from .main_window_gui import Ui_MainWindow
 from PyQt6.QtWidgets import QMainWindow
 from PyQt6.QtCore import pyqtSlot, QThread, pyqtSignal
 
-from ctypes import LittleEndianStructure, c_uint32, c_uint16, c_uint8
+from ctypes import LittleEndianStructure, c_uint32, c_uint16, c_uint8, c_int8
 from serial import Serial
-from typing import Union
+from typing import Union, Tuple
 
 
 class WorkerThread(QThread):
@@ -33,7 +33,18 @@ class WorkerThread(QThread):
     def run(self):
         while not self.stop:
             self.callback()
+            self.msleep(250)
         self.finished_signal.emit()
+
+
+def calc_checksum(data) -> Tuple:
+    ck_a = 0
+    ck_b = 0
+    for i in data:
+        ck_a += i
+        ck_b += ck_a
+
+    return ck_a % 256, ck_b % 256
 
 
 def generate_packet(payload: bytes, baudrate: int) -> LittleEndianStructure:
@@ -46,11 +57,9 @@ def generate_packet(payload: bytes, baudrate: int) -> LittleEndianStructure:
             ("payload", c_uint8 * len(payload)),
             ("crc", c_uint16)
         )
-    obj = Packet()
-    obj.signature = 0xb562
-    obj.payload_length = len(bytes)
-    obj.baudrate = baudrate
-    obj.payload = payload
+    data = [0xb5, 0x62, *len(payload).to_bytes(2, "little"), *baudrate.to_bytes(4, "little"), *payload]
+    data.extend(calc_checksum(data[2:]))
+    obj = Packet.from_buffer_copy(bytes(data))
 
     return obj
 
@@ -71,9 +80,18 @@ class MainWindow(Ui_MainWindow, QMainWindow):
     def connection_handler(self):
         ip = self.ip_addr.text()
         data = self.ser.readline()
+        baudrate = self.baudrate.currentText()
+
+        if baudrate.lower() != 'unknown':
+            baudrate = int(baudrate)
+        else:
+            self.connection_thread.stop = True
+            return
+
         if self.debug:
             print(data)
-        packet = generate_packet(data, len(data))
+
+        packet = generate_packet(data, baudrate)
         self.socket.sendto(packet, (ip, 9000))
 
     @pyqtSlot()
